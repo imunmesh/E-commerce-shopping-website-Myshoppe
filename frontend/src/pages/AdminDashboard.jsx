@@ -54,6 +54,17 @@ const AdminDashboard = () => {
   const [ordersList, setOrdersList] = useState([]);
   const [selectedOrderStatus, setSelectedOrderStatus] = useState({});
 
+  // Return requests state
+  const [returnsList, setReturnsList] = useState([]);
+  
+  // Expand order tracking overrides states
+  const [expandedOrderId, setExpandedOrderId] = useState(null);
+  const [orderTrackingLogs, setOrderTrackingLogs] = useState({});
+  const [newLogStatus, setNewLogStatus] = useState('Packed');
+  const [newLogLocation, setNewLogLocation] = useState('Mumbai Warehouse');
+  const [newLogMessage, setNewLogMessage] = useState('');
+  const [triggerEmailNotif, setTriggerEmailNotif] = useState(true);
+
   // Coupon Management states
   const [couponsList, setCouponsList] = useState([]);
   const [showCouponForm, setShowCouponForm] = useState(false);
@@ -66,6 +77,12 @@ const AdminDashboard = () => {
   const [couponExpiry, setCouponExpiry] = useState('');
   const [couponActive, setCouponActive] = useState(true);
   const [couponSubmitLoading, setCouponSubmitLoading] = useState(false);
+
+  // System settings states
+  const [settingsMode, setSettingsMode] = useState('development');
+  const [settingsSpeed, setSettingsSpeed] = useState('demo');
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState('');
 
   useEffect(() => {
     if (user?.role === 'admin') {
@@ -82,14 +99,16 @@ const AdminDashboard = () => {
       const categoriesPromise = api.get('/products/categories');
       const ordersPromise = api.get('/orders');
       const couponsPromise = api.get('/coupons');
+      const returnsPromise = api.get('/returns');
 
-      const [metricsRes, chartsRes, productsRes, categoriesRes, ordersRes, couponsRes] = await Promise.all([
+      const [metricsRes, chartsRes, productsRes, categoriesRes, ordersRes, couponsRes, returnsRes] = await Promise.all([
         metricsPromise,
         chartsPromise,
         productsPromise,
         categoriesPromise,
         ordersPromise,
-        couponsPromise
+        couponsPromise,
+        returnsPromise
       ]);
 
       setMetrics(metricsRes.data);
@@ -98,6 +117,16 @@ const AdminDashboard = () => {
       setCategoriesList(categoriesRes.data);
       setOrdersList(ordersRes.data);
       setCouponsList(couponsRes.data);
+      setReturnsList(returnsRes.data);
+
+      // Fetch system settings
+      try {
+        const settingsRes = await api.get('/admin/settings');
+        setSettingsMode(settingsRes.data.trackingMode);
+        setSettingsSpeed(settingsRes.data.trackingSpeed);
+      } catch (err) {
+        console.error('Failed to load system settings:', err);
+      }
 
       // Initialize status selectors
       const statusMap = {};
@@ -210,6 +239,65 @@ const AdminDashboard = () => {
     setSelectedOrderStatus(prev => ({ ...prev, [orderId]: value }));
   };
 
+  const handleToggleExpandOrder = async (orderId) => {
+    if (expandedOrderId === orderId) {
+      setExpandedOrderId(null);
+      return;
+    }
+    setExpandedOrderId(orderId);
+    try {
+      const res = await api.get(`/orders/${orderId}/tracking`);
+      setOrderTrackingLogs(prev => ({ ...prev, [orderId]: res.data }));
+    } catch (error) {
+      console.error('Failed to fetch tracking logs:', error);
+    }
+  };
+
+  const handleAddTrackingLog = async (e, orderId) => {
+    e.preventDefault();
+    try {
+      await api.post(`/orders/${orderId}/tracking`, {
+        status: newLogStatus,
+        location: newLogLocation,
+        message: newLogMessage || `Order status advanced to ${newLogStatus}.`,
+        triggerEmail: triggerEmailNotif
+      });
+      alert('Tracking log added successfully.');
+      
+      // Reset form & reload tracking logs
+      setNewLogMessage('');
+      const res = await api.get(`/orders/${orderId}/tracking`);
+      setOrderTrackingLogs(prev => ({ ...prev, [orderId]: res.data }));
+      
+      // Reload order details
+      await loadDashboardData();
+    } catch (error) {
+      console.error(error);
+      alert(error.response?.data?.error || 'Failed to add tracking log.');
+    }
+  };
+
+  const handleResendEmail = async (orderId, status) => {
+    try {
+      const res = await api.post(`/orders/${orderId}/resend-email`, { status });
+      alert(res.data.message || `Resent ${status} email successfully.`);
+    } catch (error) {
+      console.error(error);
+      alert(error.response?.data?.error || 'Failed to resend email.');
+    }
+  };
+
+  const handleUpdateReturnStatus = async (returnId, newStatus) => {
+    try {
+      await api.put(`/returns/${returnId}/status`, { status: newStatus });
+      alert(`Return Request #${returnId} status updated to ${newStatus}.`);
+      await loadDashboardData();
+    } catch (error) {
+      console.error(error);
+      alert(error.response?.data?.error || 'Failed to update return request status.');
+    }
+  };
+
   const handleCreateCoupon = async (e) => {
     e.preventDefault();
     setCouponSubmitLoading(true);
@@ -268,6 +356,24 @@ const AdminDashboard = () => {
 
   const handleImageFileChange = (e) => {
     setSelectedImages(Array.from(e.target.files));
+  };
+
+  const handleSaveSettings = async (e) => {
+    e.preventDefault();
+    setSettingsLoading(true);
+    setSettingsMessage('');
+    try {
+      await api.put('/admin/settings', {
+        trackingMode: settingsMode,
+        trackingSpeed: settingsSpeed
+      });
+      setSettingsMessage('System settings updated successfully!');
+    } catch (err) {
+      console.error('Failed to save settings:', err);
+      setSettingsMessage(err.response?.data?.error || 'Failed to update settings.');
+    } finally {
+      setSettingsLoading(false);
+    }
   };
 
   if (loading) {
@@ -416,6 +522,89 @@ const AdminDashboard = () => {
 
       </div>
 
+      {/* 2.5. RETURN REQUESTS MANAGEMENT PANEL */}
+      <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm space-y-4">
+        <h3 className="font-extrabold text-gray-900 text-lg border-b border-gray-100 pb-3">
+          Manage Return Requests
+        </h3>
+        {returnsList.length === 0 ? (
+          <p className="text-gray-400 text-sm py-4 text-center">No return requests submitted yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead>
+                <tr className="border-b border-gray-200 text-gray-400 font-bold uppercase text-[10px]">
+                  <th className="py-3">Return ID</th>
+                  <th className="py-3">Order ID</th>
+                  <th className="py-3">Customer</th>
+                  <th className="py-3">Reason / Details</th>
+                  <th className="py-3">Image</th>
+                  <th className="py-3">Status</th>
+                  <th className="py-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {returnsList.map((ret) => (
+                  <tr key={ret.id} className="border-b border-gray-100 hover:bg-gray-50/50">
+                    <td className="py-3.5 font-bold">#{ret.id}</td>
+                    <td className="py-3.5 font-bold">#{ret.order_id}</td>
+                    <td className="py-3.5 font-medium">
+                      <p>{ret.user_name}</p>
+                      <p className="text-xs text-gray-400">{ret.user_email}</p>
+                    </td>
+                    <td className="py-3.5 max-w-xs">
+                      <p className="font-bold text-gray-800">{ret.reason}</p>
+                      <p className="text-xs text-gray-500 line-clamp-2 mt-0.5">{ret.description}</p>
+                    </td>
+                    <td className="py-3.5">
+                      {ret.image_url ? (
+                        <a href={ret.image_url} target="_blank" rel="noreferrer" className="block w-12 h-12 border rounded overflow-hidden hover:opacity-90 transition">
+                          <img src={ret.image_url} alt="Return product photo" className="w-full h-full object-cover" />
+                        </a>
+                      ) : (
+                        <span className="text-xs text-gray-400 font-medium">No image</span>
+                      )}
+                    </td>
+                    <td className="py-3.5 font-semibold">
+                      <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider ${
+                        ret.status === 'Refunded' ? 'bg-red-50 text-red-700' :
+                        ret.status === 'Approved' ? 'bg-green-50 text-green-700' :
+                        ret.status === 'Rejected' ? 'bg-gray-100 text-gray-500' :
+                        ret.status === 'Return Requested' ? 'bg-yellow-50 text-yellow-700' :
+                        ret.status === 'Under Review' ? 'bg-orange-50 text-orange-700' :
+                        ret.status === 'Pickup Scheduled' ? 'bg-blue-50 text-blue-700' :
+                        ret.status === 'Item Received' ? 'bg-indigo-50 text-indigo-700' :
+                        ret.status === 'Refund Processing' ? 'bg-purple-50 text-purple-700' :
+                        'bg-yellow-50 text-yellow-700'
+                      }`}>
+                        {ret.status}
+                      </span>
+                    </td>
+                    <td className="py-3.5">
+                      <select
+                        value={ret.status}
+                        onChange={(e) => handleUpdateReturnStatus(ret.id, e.target.value)}
+                        className="text-xs bg-white border border-gray-300 rounded px-2 py-1.5 font-bold text-gray-700 focus:outline-none focus:ring-1 focus:ring-amazon-yellow disabled:opacity-60 disabled:cursor-not-allowed"
+                        disabled={ret.status === 'Refunded' || ret.status === 'Rejected'}
+                      >
+                        <option value="Return Requested">Return Requested</option>
+                        <option value="Under Review">Under Review</option>
+                        <option value="Approved">Approved</option>
+                        <option value="Pickup Scheduled">Pickup Scheduled</option>
+                        <option value="Item Received">Item Received</option>
+                        <option value="Refund Processing">Refund Processing</option>
+                        <option value="Refunded">Refunded</option>
+                        <option value="Rejected">Rejected</option>
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* 3. ORDER MANAGEMENT PANEL */}
       <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm space-y-4">
         <h3 className="font-extrabold text-gray-900 text-lg border-b border-gray-100 pb-3">
@@ -437,43 +626,167 @@ const AdminDashboard = () => {
                 </tr>
               </thead>
               <tbody>
-                {ordersList.map((ord) => (
-                  <tr key={ord.id} className="border-b border-gray-100 hover:bg-gray-50/50">
-                    <td className="py-3.5 font-bold">#{ord.id}</td>
-                    <td className="py-3.5 font-medium">
-                      <p>{ord.user_name}</p>
-                      <p className="text-xs text-gray-400">{ord.user_email}</p>
-                    </td>
-                    <td className="py-3.5 font-bold text-amazon-orange">${parseFloat(ord.total_amount).toFixed(2)}</td>
-                    <td className="py-3.5">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        ord.order_status === 'Delivered' ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'
-                      }`}>
-                        {ord.order_status}
-                      </span>
-                    </td>
-                    <td className="py-3.5 flex items-center space-x-2">
-                      <select
-                        value={selectedOrderStatus[ord.id] || ord.order_status}
-                        onChange={(e) => handleStatusSelectChange(ord.id, e.target.value)}
-                        className="bg-gray-50 border border-gray-200 text-xs rounded p-1.5 focus:outline-none"
+                {ordersList.map((ord) => {
+                  const isExpanded = expandedOrderId === ord.id;
+                  const logs = orderTrackingLogs[ord.id] || [];
+
+                  return (
+                    <React.Fragment key={ord.id}>
+                      <tr 
+                        onClick={() => handleToggleExpandOrder(ord.id)}
+                        className={`border-b border-gray-105 hover:bg-gray-50/50 cursor-pointer transition-colors ${
+                          isExpanded ? 'bg-gray-50' : ''
+                        }`}
                       >
-                        <option value="Placed">Placed</option>
-                        <option value="Confirmed">Confirmed</option>
-                        <option value="Packed">Packed</option>
-                        <option value="Shipped">Shipped</option>
-                        <option value="Out For Delivery">Out For Delivery</option>
-                        <option value="Delivered">Delivered</option>
-                      </select>
-                      <button
-                        onClick={() => handleUpdateOrderStatus(ord.id)}
-                        className="bg-amazon-lightBlue text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-opacity-95"
-                      >
-                        Update
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                        <td className="py-3.5 font-bold">#{ord.id}</td>
+                        <td className="py-3.5 font-medium">
+                          <p>{ord.user_name}</p>
+                          <p className="text-xs text-gray-400">{ord.user_email}</p>
+                        </td>
+                        <td className="py-3.5 font-bold text-amazon-orange">${parseFloat(ord.total_amount).toFixed(2)}</td>
+                        <td className="py-3.5">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            ord.order_status === 'Delivered' ? 'bg-green-50 text-green-700' :
+                            ord.order_status === 'Refunded' ? 'bg-red-50 text-red-700' :
+                            'bg-amber-50 text-amber-700'
+                          }`}>
+                            {ord.order_status}
+                          </span>
+                        </td>
+                        <td className="py-3.5 flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
+                          <select
+                            value={selectedOrderStatus[ord.id] || ord.order_status}
+                            onChange={(e) => handleStatusSelectChange(ord.id, e.target.value)}
+                            className="bg-white border border-gray-250 text-xs rounded p-1.5 focus:outline-none"
+                          >
+                            <option value="Placed">Placed</option>
+                            <option value="Packed">Packed</option>
+                            <option value="Shipped">Shipped</option>
+                            <option value="Out For Delivery">Out For Delivery</option>
+                            <option value="Delivered">Delivered</option>
+                            <option value="Refunded">Refunded</option>
+                          </select>
+                          <button
+                            onClick={() => handleUpdateOrderStatus(ord.id)}
+                            className="bg-amazon-lightBlue text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-opacity-95"
+                          >
+                            Update
+                          </button>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan="5" className="bg-gray-50/30 p-6 border-b border-gray-150">
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8" onClick={(e) => e.stopPropagation()}>
+                              
+                              {/* Left Column: List of tracking logs & Resend Email triggers */}
+                              <div className="space-y-4">
+                                <h4 className="font-bold text-gray-900 text-xs uppercase tracking-wider">Tracking Timeline Logs</h4>
+                                {logs.length === 0 ? (
+                                  <p className="text-xs text-gray-400">No tracking logs found.</p>
+                                ) : (
+                                  <div className="relative border-l border-gray-200 pl-4 ml-2 space-y-4">
+                                    {logs.map((track) => (
+                                      <div key={track.id} className="relative text-xs">
+                                        <div className="absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full bg-amazon-orange"></div>
+                                        <div>
+                                          <div className="flex items-center space-x-2">
+                                            <span className="font-bold text-gray-800">{track.status}</span>
+                                            <span className="text-[10px] text-gray-400">({track.location})</span>
+                                            <span className="text-[9px] text-gray-400 ml-auto">{new Date(track.created_at).toLocaleString()}</span>
+                                          </div>
+                                          <p className="text-gray-500 mt-0.5">{track.message}</p>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Resend Email Notification panel */}
+                                <div className="pt-4 border-t border-gray-200 space-y-2">
+                                  <h4 className="font-bold text-gray-900 text-xs uppercase tracking-wider">Resend Email Notifications</h4>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {['Placed', 'Packed', 'Shipped', 'Out For Delivery', 'Delivered', 'Refunded'].map((st) => (
+                                      <button
+                                        key={st}
+                                        onClick={() => handleResendEmail(ord.id, st)}
+                                        className="bg-white hover:bg-gray-100 border border-gray-300 text-[10px] font-bold px-2 py-1.5 rounded transition active:scale-95 text-gray-750"
+                                      >
+                                        Resend {st}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Right Column: Add Custom tracking log entry */}
+                              <div className="bg-white p-5 rounded-lg border border-gray-200 shadow-sm space-y-3">
+                                <h4 className="font-bold text-gray-900 text-xs uppercase tracking-wider">Add Manual Tracking Log</h4>
+                                <form onSubmit={(e) => handleAddTrackingLog(e, ord.id)} className="space-y-3">
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Status</label>
+                                      <select
+                                        value={newLogStatus}
+                                        onChange={(e) => setNewLogStatus(e.target.value)}
+                                        className="w-full bg-white border border-gray-300 rounded p-1.5 text-xs focus:outline-none"
+                                      >
+                                        <option value="Placed">Placed</option>
+                                        <option value="Packed">Packed</option>
+                                        <option value="Shipped">Shipped</option>
+                                        <option value="Out For Delivery">Out For Delivery</option>
+                                        <option value="Delivered">Delivered</option>
+                                        <option value="Refunded">Refunded</option>
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Location</label>
+                                      <input
+                                        type="text"
+                                        value={newLogLocation}
+                                        onChange={(e) => setNewLogLocation(e.target.value)}
+                                        className="w-full bg-white border border-gray-300 rounded p-1.5 text-xs focus:outline-none"
+                                        placeholder="Mumbai Dispatch Center"
+                                        required
+                                      />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Custom Message</label>
+                                    <textarea
+                                      value={newLogMessage}
+                                      onChange={(e) => setNewLogMessage(e.target.value)}
+                                      className="w-full bg-white border border-gray-300 rounded p-1.5 text-xs focus:outline-none"
+                                      placeholder="Package is arriving at delivery hub..."
+                                      rows="2"
+                                    />
+                                  </div>
+                                  <div className="flex items-center space-x-2 pt-1">
+                                    <input
+                                      type="checkbox"
+                                      id={`triggerEmail-${ord.id}`}
+                                      checked={triggerEmailNotif}
+                                      onChange={(e) => setTriggerEmailNotif(e.target.checked)}
+                                      className="w-3.5 h-3.5 text-amazon-orange focus:ring-amazon-orange rounded border-gray-300"
+                                    />
+                                    <label htmlFor={`triggerEmail-${ord.id}`} className="text-[11px] font-bold text-gray-700 select-none">Send Stage Email & App Notification</label>
+                                  </div>
+                                  <button
+                                    type="submit"
+                                    className="w-full bg-amazon-orange hover:bg-opacity-95 text-white font-bold text-xs py-2 rounded transition active:scale-95"
+                                  >
+                                    Add Log Entry & Sync State
+                                  </button>
+                                </form>
+                              </div>
+
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -820,6 +1133,70 @@ const AdminDashboard = () => {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* 7. SYSTEM SETTINGS PANEL */}
+      <div className="bg-white p-6 rounded-xl border border-gray-150 shadow-sm space-y-6">
+        <div className="flex items-center space-x-2 border-b border-gray-100 pb-3">
+          <TrendingUp className="text-amazon-orange" size={24} />
+          <h3 className="font-extrabold text-gray-900 text-lg">
+            System Settings & Simulated Tracking Overrides
+          </h3>
+        </div>
+
+        <p className="text-xs text-gray-500 max-w-2xl leading-relaxed">
+          Manage how the automated tracking worker progresses shipping status. Toggle between <strong>Demo Mode</strong> (cycles from Placed to Delivered in 40 seconds) and <strong>Normal Mode</strong> (advances over days based on estimated delivery intervals).
+        </p>
+
+        {settingsMessage && (
+          <div className={`text-xs font-bold p-3 rounded border ${
+            settingsMessage.includes('successfully')
+              ? 'bg-green-50 text-green-700 border-green-200'
+              : 'bg-red-50 text-red-700 border-red-200'
+          }`}>
+            {settingsMessage}
+          </div>
+        )}
+
+        <form onSubmit={handleSaveSettings} className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-gray-700 uppercase tracking-wider block">
+              Tracking Mode
+            </label>
+            <select
+              value={settingsMode}
+              onChange={(e) => setSettingsMode(e.target.value)}
+              className="w-full bg-gray-55 border border-gray-200 rounded p-2 text-sm focus:outline-none focus:ring-1 focus:ring-amazon-yellow font-semibold"
+            >
+              <option value="development">Development (Mock / Sandbox)</option>
+              <option value="production">Production (Real Estimations)</option>
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-gray-700 uppercase tracking-wider block">
+              Tracking Speed / Cycle
+            </label>
+            <select
+              value={settingsSpeed}
+              onChange={(e) => setSettingsSpeed(e.target.value)}
+              className="w-full bg-gray-55 border border-gray-200 rounded p-2 text-sm focus:outline-none focus:ring-1 focus:ring-amazon-yellow font-semibold"
+            >
+              <option value="demo">Demo Mode (10s per stage progression)</option>
+              <option value="normal">Normal Mode (24h or Estimated Date progression)</option>
+            </select>
+          </div>
+
+          <div>
+            <button
+              type="submit"
+              disabled={settingsLoading}
+              className="w-full bg-amazon-orange hover:bg-opacity-95 text-white font-bold text-sm py-2.5 px-4 rounded transition active:scale-95 disabled:bg-gray-200 disabled:text-gray-400"
+            >
+              {settingsLoading ? 'Saving Settings...' : 'Save Configuration'}
+            </button>
+          </div>
+        </form>
       </div>
 
     </div>

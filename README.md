@@ -81,3 +81,27 @@ Detailed setup and execution guides are available:
 * **[DEPLOYMENT.md](file:///c:/Users/Unmesh/Myshopee/DEPLOYMENT.md)**: Directives for deploying to Firebase Hosting, Render, and Neon.
 * **[DATABASE.md](file:///c:/Users/Unmesh/Myshopee/DATABASE.md)**: Database schema maps, constraints, and relationships.
 * **[API.md](file:///c:/Users/Unmesh/Myshopee/API.md)**: Detailed API specification, endpoints, parameters, and payloads.
+
+---
+
+## 🤖 AI Shopping Assistant Chatbot (Agent-Powered)
+
+MyShopee includes a state-of-the-art AI Shopping Assistant designed using the **Gemini 1.5 Flash API**. Rather than giving boilerplate answers, the assistant behaves like an **AI Agent with access to tools**:
+
+1. **Tool calling loop:** The agent parses the user's intent and requests function calls to look up databases in real-time.
+2. **Dynamic Contexts:** Product search queries, side-by-side product comparisons, order tracking, and coupons are fetched directly from your live Neon PostgreSQL database.
+3. **Conversational Memory:** Stores sessions and message histories separately in the database to remember follow-up queries.
+
+### Docker Support
+
+To run the entire stack (React frontend + Node API backend) locally in Docker containers:
+```bash
+# 1. Provide your live GEMINI_API_KEY in docker-compose.yml
+# 2. Build and run containers
+docker-compose up --build
+```
+The frontend will be available at `http://localhost` and backend API at `http://localhost:5000`.
+
+Detailed guides:
+* **[Firebase Hosting Deployment Guide](file:///C:/Users/Unmesh/.gemini/antigravity/brain/e9d6d1bd-6c4f-4950-8030-5fd1d0037c34/firebase_hosting_guide.md)**: Steps to deploy the React chatbot frontend to Firebase.
+

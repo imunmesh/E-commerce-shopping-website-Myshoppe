@@ -20,6 +20,14 @@ app.use((req, res, next) => {
   next();
 });
 
+// Private Network Access (PNA) Preflight CORS Middleware
+app.use((req, res, next) => {
+  if (req.headers['access-control-request-private-network']) {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
+  next();
+});
+
 // 2. CORS configuration
 app.use(cors({
   origin: function(origin, callback) {
@@ -27,13 +35,17 @@ app.use(cors({
     if (!origin) return callback(null, true);
     
     const allowedOrigins = [
-      process.env.CLIENT_URL || 'http://localhost:5173',
+      'http://localhost:5173',
       'http://127.0.0.1:5173',
       'http://localhost:5174',
       'http://127.0.0.1:5174',
       'http://localhost:54872',
       'http://127.0.0.1:54872'
     ];
+    
+    if (process.env.CLIENT_URL) {
+      allowedOrigins.push(process.env.CLIENT_URL);
+    }
     
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -47,15 +59,21 @@ app.use(cors({
 // 3. API Rate Limiting (to prevent brute-force and DDoS)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per window
+  max: 1000, // Limit each IP to 1000 requests per window
+  skip: (req, res) => {
+    // Disable rate limiting in development mode
+    if (process.env.NODE_ENV === 'development') return true;
+    // Skip rate limiting for polling / high-frequency sync routes
+    const skipPaths = ['/api/auth/sync', '/api/notifications'];
+    return skipPaths.some(path => req.originalUrl.startsWith(path));
+  },
   message: { error: 'Too many requests from this IP, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false
 });
 
-// Apply rate limiting to all API routes except auth sync (called frequently by Firebase)
+// Apply rate limiting to all API routes
 app.use('/api', limiter);
-app.use('/api/auth/sync', (req, res, next) => next()); // Skip rate limiting for auth sync
 
 // 4. Stripe Webhook Raw Body Middleware (MUST be before express.json())
 app.use('/api/payment/webhook', express.raw({ type: 'application/json' }));
@@ -80,7 +98,10 @@ app.use('/api/orders', require('./routes/order.routes'));
 app.use('/api/reviews', require('./routes/review.routes'));
 app.use('/api/coupons', require('./routes/coupon.routes'));
 app.use('/api/compare', require('./routes/compare.routes'));
+app.use('/api/chat', require('./routes/chat.routes'));
 app.use('/api/addresses', require('./routes/address.routes'));
+app.use('/api/returns', require('./routes/return.routes'));
+app.use('/api/notifications', require('./routes/notification.routes'));
 
 // 7. Global Error Handler
 app.use((err, req, res, next) => {
@@ -94,4 +115,12 @@ app.listen(PORT, () => {
   console.log(`🚀 MyShopee Server running in ${process.env.NODE_ENV || 'development'} mode`);
   console.log(`🔌 Listening on Port: ${PORT}`);
   console.log(`==================================================`);
+  
+  // Start automated order tracking & review reminder background worker
+  try {
+    require('./services/trackingAutomation').start();
+  } catch (err) {
+    console.error('Failed to start tracking automation worker:', err);
+  }
 });
+

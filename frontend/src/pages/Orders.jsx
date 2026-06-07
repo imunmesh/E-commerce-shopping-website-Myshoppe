@@ -13,11 +13,30 @@ const Orders = () => {
   // Tracking & details of expanded order
   const [orderDetails, setOrderDetails] = useState(null);
   const [orderTracking, setOrderTracking] = useState([]);
+  const [returnTracking, setReturnTracking] = useState([]);
   const [detailsLoading, setDetailsLoading] = useState(false);
+
+  // Return request states
+  const [returns, setReturns] = useState([]);
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnOrderId, setReturnOrderId] = useState(null);
+  const [returnReason, setReturnReason] = useState('Damaged Product');
+  const [returnDescription, setReturnDescription] = useState('');
+  const [returnImageFile, setReturnImageFile] = useState(null);
+  const [submittingReturn, setSubmittingReturn] = useState(false);
+
+  // Timer state for real-time countdown updates
+  const [nowTime, setNowTime] = useState(new Date());
 
   useEffect(() => {
     if (isAuthenticated) {
       fetchOrders();
+      fetchReturns();
+      
+      const interval = setInterval(() => {
+        setNowTime(new Date());
+      }, 1000);
+      return () => clearInterval(interval);
     }
   }, [isAuthenticated]);
 
@@ -33,11 +52,106 @@ const Orders = () => {
     }
   };
 
+  const fetchReturns = async () => {
+    try {
+      const response = await api.get('/returns');
+      setReturns(response.data);
+    } catch (error) {
+      console.error('Failed to fetch returns history:', error);
+    }
+  };
+
+  const getReturnWindowDetails = (order, trackingLogs) => {
+    const deliveredLog = trackingLogs ? trackingLogs.find(t => t.status === 'Delivered') : null;
+    const deliveryDate = deliveredLog ? new Date(deliveredLog.created_at) : (order.estimated_delivery_date ? new Date(order.estimated_delivery_date) : new Date(order.created_at));
+    
+    // Determine if fast tracking mode was used for this order
+    const orderDate = new Date(order.created_at);
+    const isFastTracking = (deliveryDate.getTime() - orderDate.getTime()) < 130 * 1000;
+    
+    const windowLimitMs = isFastTracking ? 120 * 1000 : 7 * 24 * 60 * 60 * 1000;
+    const eligibilityEndDate = new Date(deliveryDate.getTime() + windowLimitMs);
+    const isEligible = nowTime < eligibilityEndDate;
+    
+    return {
+      deliveryDate,
+      eligibilityEndDate,
+      isEligible,
+      isFastTracking
+    };
+  };
+
+  const getCountdownText = (order) => {
+    const status = order.order_status;
+    if (status === 'Delivered') return 'Delivered successfully';
+    if (status === 'Refunded') return 'Order Refunded';
+    if (status === 'Cancelled') return 'Order Cancelled';
+    if (!order.estimated_delivery_date) return 'Delivery date pending';
+
+    const estDate = new Date(order.estimated_delivery_date);
+    const diffMs = estDate.getTime() - nowTime.getTime();
+
+    if (diffMs <= 0) {
+      return 'Arriving shortly';
+    }
+
+    const diffSecs = Math.floor(diffMs / 1000);
+    const isFastTracking = diffSecs < 130;
+
+    if (isFastTracking) {
+      return `Expected in ${diffSecs}s`;
+    }
+
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays === 1) {
+      return 'Expected tomorrow';
+    }
+    return `Expected in ${diffDays} days`;
+  };
+
+  const handleOpenReturnModal = (orderId) => {
+    setReturnOrderId(orderId);
+    setReturnReason('Damaged Product');
+    setReturnDescription('');
+    setReturnImageFile(null);
+    setShowReturnModal(true);
+  };
+
+  const handleSubmitReturn = async (e) => {
+    e.preventDefault();
+    setSubmittingReturn(true);
+    
+    const formData = new FormData();
+    formData.append('orderId', returnOrderId);
+    formData.append('reason', returnReason);
+    formData.append('description', returnDescription);
+    if (returnImageFile) {
+      formData.append('image', returnImageFile);
+    }
+    
+    try {
+      await api.post('/returns', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      alert('Return request submitted successfully!');
+      setShowReturnModal(false);
+      fetchReturns();
+    } catch (error) {
+      console.error(error);
+      alert(error.response?.data?.error || 'Failed to submit return request.');
+    } finally {
+      setSubmittingReturn(false);
+    }
+  };
+
   const handleToggleExpand = async (orderId) => {
     if (expandedOrderId === orderId) {
       setExpandedOrderId(null);
       setOrderDetails(null);
       setOrderTracking([]);
+      setReturnTracking([]);
       return;
     }
 
@@ -45,6 +159,7 @@ const Orders = () => {
     setDetailsLoading(true);
     setOrderDetails(null);
     setOrderTracking([]);
+    setReturnTracking([]);
 
     try {
       const detailsPromise = api.get(`/orders/${orderId}`);
@@ -53,6 +168,17 @@ const Orders = () => {
       const [detailsRes, trackingRes] = await Promise.all([detailsPromise, trackingPromise]);
       setOrderDetails(detailsRes.data);
       setOrderTracking(trackingRes.data);
+
+      // Fetch return tracking if a return claim exists for this order
+      const orderReturn = returns.find(r => r.order_id === orderId);
+      if (orderReturn) {
+        try {
+          const returnTrackingRes = await api.get(`/returns/${orderReturn.id}/tracking`);
+          setReturnTracking(returnTrackingRes.data);
+        } catch (err) {
+          console.error('Failed to load return tracking logs:', err);
+        }
+      }
     } catch (error) {
       console.error('Failed to load expanded order details:', error);
     } finally {
@@ -82,18 +208,56 @@ const Orders = () => {
 
   // Maps order status string to index for progress math
   const getStatusIndex = (status) => {
-    const statuses = ['Placed', 'Confirmed', 'Packed', 'Shipped', 'Out For Delivery', 'Delivered'];
+    const statuses = ['Placed', 'Packed', 'Shipped', 'Out For Delivery', 'Delivered'];
     return statuses.indexOf(status);
   };
 
   const TIMELINE_STEPS = [
     { name: 'Placed', label: 'Order Placed' },
-    { name: 'Confirmed', label: 'Confirmed' },
     { name: 'Packed', label: 'Packed' },
     { name: 'Shipped', label: 'Shipped' },
     { name: 'Out For Delivery', label: 'Out For Delivery' },
     { name: 'Delivered', label: 'Delivered' }
   ];
+
+  const RETURN_TIMELINE_STEPS = [
+    { name: 'Return Requested', label: 'Return Requested' },
+    { name: 'Under Review', label: 'Under Review' },
+    { name: 'Approved', label: 'Approved' },
+    { name: 'Pickup Scheduled', label: 'Pickup Scheduled' },
+    { name: 'Item Received', label: 'Item Received' },
+    { name: 'Refund Processing', label: 'Refund Processing' },
+    { name: 'Refunded', label: 'Refunded' }
+  ];
+
+  const getReturnStepStatus = (stepName, currentStatus) => {
+    const steps = [
+      'Return Requested',
+      'Under Review',
+      'Approved',
+      'Pickup Scheduled',
+      'Item Received',
+      'Refund Processing',
+      'Refunded'
+    ];
+    const currentIdx = steps.indexOf(currentStatus);
+    const stepIdx = steps.indexOf(stepName);
+
+    if (currentStatus === 'Rejected') {
+      return { icon: '❌', label: 'Rejected' };
+    }
+
+    if (stepIdx < currentIdx) {
+      return { icon: '✅', label: 'Completed' };
+    } else if (stepIdx === currentIdx) {
+      if (stepName === 'Refunded') {
+        return { icon: '✅', label: 'Completed' };
+      }
+      return { icon: '🔄', label: 'In Progress' };
+    } else {
+      return { icon: '⏳', label: 'Pending' };
+    }
+  };
 
   if (!isAuthenticated) {
     return (
@@ -166,6 +330,18 @@ const Orders = () => {
                       <p className="text-xs text-gray-400 font-medium">TOTAL INVOICE</p>
                       <p className="text-sm font-extrabold text-amazon-orange">${parseFloat(order.total_amount).toFixed(2)}</p>
                     </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-medium">ESTIMATED ARRIVAL</p>
+                      <p className="text-sm font-bold text-amazon-lightBlue">{getCountdownText(order)}</p>
+                    </div>
+                    {order.courier_name && order.tracking_number && (
+                      <div>
+                        <p className="text-xs text-gray-400 font-medium">SHIPPED VIA</p>
+                        <p className="text-sm font-bold text-gray-800">
+                          {order.courier_name} (ID: <span className="font-mono text-xs text-amazon-orange select-all cursor-pointer bg-gray-100/55 px-1 py-0.5 rounded" title="Click to copy" onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(order.tracking_number); alert('Copied tracking ID: ' + order.tracking_number); }}>{order.tracking_number}</span>)
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center space-x-4">
@@ -190,7 +366,7 @@ const Orders = () => {
                     ) : orderDetails ? (
                       <>
                         {/* Download Invoice Action Card */}
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-4">
                           <div>
                             <h4 className="font-bold text-gray-900 text-sm">Detailed Invoice Details</h4>
                             <p className="text-xs text-gray-500 mt-0.5">Generate and download official PDF receipt.</p>
@@ -203,6 +379,58 @@ const Orders = () => {
                             <span>Download Invoice (PDF)</span>
                           </button>
                         </div>
+
+                        {/* Return Support & Window Check Card */}
+                        {(() => {
+                          const orderReturn = returns.find(r => r.order_id === order.id);
+                          const windowInfo = getReturnWindowDetails(order, orderTracking);
+                          
+                          if (!orderReturn && order.order_status !== 'Delivered') return null;
+                          
+                          return (
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
+                              <div>
+                                <h4 className="font-bold text-gray-900 text-sm">Return & Refund Support</h4>
+                                {orderReturn ? (
+                                  <div className="mt-1 flex items-center space-x-2">
+                                    <span className="text-xs font-semibold text-gray-600">Return request status:</span>
+                                    <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase text-[10px] ${
+                                      orderReturn.status === 'Refunded' ? 'bg-red-100 text-red-800' :
+                                      orderReturn.status === 'Approved' ? 'bg-green-100 text-green-800' :
+                                      orderReturn.status === 'Rejected' ? 'bg-gray-105 text-gray-800' :
+                                      'bg-yellow-100 text-yellow-800'
+                                    }`}>
+                                      {orderReturn.status}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-gray-500 mt-0.5">
+                                    {windowInfo.isEligible ? (
+                                      <>
+                                        Eligible for returns until{' '}
+                                        <span className="font-semibold text-gray-700">
+                                          {windowInfo.eligibilityEndDate.toLocaleDateString()} at{' '}
+                                          {windowInfo.eligibilityEndDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="text-red-500 font-semibold">Return Not Available (Return window closed)</span>
+                                    )}
+                                  </p>
+                                )}
+                              </div>
+                              
+                              {!orderReturn && windowInfo.isEligible && (
+                                <button
+                                  onClick={() => handleOpenReturnModal(order.id)}
+                                  className="bg-amazon-yellow text-amazon-blue hover:bg-opacity-90 font-bold text-xs py-2 px-4 rounded border border-yellow-400 shadow-sm transition active:scale-95 shrink-0"
+                                >
+                                  Request Return
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* 1. PROGRESS BAR & TIMELINE */}
                         <div className="space-y-4">
@@ -238,6 +466,64 @@ const Orders = () => {
                             })}
                           </div>
                         </div>
+
+                        {/* Return Tracking Progress Section */}
+                        {(() => {
+                          const orderReturn = returns.find(r => r.order_id === order.id);
+                          if (!orderReturn) return null;
+
+                          return (
+                            <div className="border-t border-gray-100 pt-6 space-y-4">
+                              <h4 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                                <span>↩️ Return Tracking Progress</span>
+                                <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider ${
+                                  orderReturn.status === 'Refunded' ? 'bg-green-50 text-green-700 border border-green-200' :
+                                  orderReturn.status === 'Rejected' ? 'bg-red-50 text-red-700 border border-red-200' :
+                                  'bg-amber-50 text-amber-700 border border-amber-200'
+                                }`}>
+                                  {orderReturn.status}
+                                </span>
+                              </h4>
+
+                              {/* Timeline Grid for Return */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3">
+                                {RETURN_TIMELINE_STEPS.map((step) => {
+                                  const stepStatus = getReturnStepStatus(step.name, orderReturn.status);
+                                  return (
+                                    <div key={step.name} className="flex flex-col items-center text-center p-3 bg-gray-50/50 rounded border border-gray-100">
+                                      <span className="text-sm mb-1">{stepStatus.icon}</span>
+                                      <p className="text-[10px] font-bold text-gray-800 leading-tight">{step.label}</p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Return Status Tracking Logs */}
+                              {returnTracking && returnTracking.length > 0 && (
+                                <div className="mt-4 bg-gray-50/50 p-4 rounded-lg border border-gray-200 space-y-3">
+                                  <h5 className="font-bold text-gray-800 text-xs">Return Tracking Logs</h5>
+                                  <div className="relative border-l border-gray-200 pl-4 ml-2 space-y-4">
+                                    {returnTracking.map((log) => (
+                                      <div key={log.id} className="relative">
+                                        <div className="absolute -left-[23px] top-1 w-3 h-3 rounded-full bg-white border-2 border-red-500 flex items-center justify-center">
+                                          <div className="w-1 h-1 bg-red-500 rounded-full"></div>
+                                        </div>
+                                        <div className="text-xs">
+                                          <div className="flex items-center space-x-2">
+                                            <span className="font-bold text-gray-800">{log.status}</span>
+                                            {log.location && <span className="text-[10px] text-gray-400">({log.location})</span>}
+                                            <span className="text-[9px] text-gray-400">{new Date(log.created_at).toLocaleString()}</span>
+                                          </div>
+                                          <p className="text-gray-550 mt-0.5">{log.message}</p>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* SHIPPING DESTINATION SNAPSHOT */}
                         {orderDetails.address && (
@@ -316,9 +602,91 @@ const Orders = () => {
           })}
         </div>
       )}
+      {/* Return Modal Dialog */}
+      <ReturnModal
+        show={showReturnModal}
+        onClose={() => setShowReturnModal(false)}
+        orderId={returnOrderId}
+        reason={returnReason}
+        setReason={setReturnReason}
+        description={returnDescription}
+        setDescription={setReturnDescription}
+        setImageFile={setReturnImageFile}
+        onSubmit={handleSubmitReturn}
+        submitting={submittingReturn}
+      />
     </div>
   );
 };
+
+// Simple Return Form Modal Dialog
+const ReturnModal = ({ show, onClose, orderId, reason, setReason, description, setDescription, setImageFile, onSubmit, submitting }) => {
+  if (!show) return null;
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg max-w-md w-full p-6 shadow-2xl relative border border-gray-100">
+        <h3 className="font-extrabold text-gray-900 text-lg mb-4">Request Return</h3>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Reason for Return</label>
+            <select
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="w-full border border-gray-300 rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-amazon-yellow bg-white"
+              required
+            >
+              <option value="Damaged Product">Damaged Product</option>
+              <option value="Wrong Item Received">Wrong Item Received</option>
+              <option value="Item Defective">Item Defective</option>
+              <option value="Quality Issue">Quality Issue</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Description / Details</label>
+            <textarea
+              placeholder="Explain why you want to return the product..."
+              rows="3"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full border border-gray-300 rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-amazon-yellow"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Upload Product Photo</label>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => setImageFile(e.target.files[0])}
+              className="w-full text-xs text-gray-500 file:mr-4 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200"
+              required
+            />
+          </div>
+          <div className="flex justify-end space-x-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 border border-gray-300 rounded-md text-xs font-bold text-gray-700 hover:bg-gray-50"
+              disabled={submitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 bg-amazon-orange hover:bg-opacity-95 text-white rounded-md text-xs font-bold shadow transition active:scale-95"
+              disabled={submitting}
+            >
+              {submitting ? 'Submitting...' : 'Submit Request'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+
 
 // Simple loader wrapper
 function Loader2({ size, className }) {

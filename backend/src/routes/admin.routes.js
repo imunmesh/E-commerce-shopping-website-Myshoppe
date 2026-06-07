@@ -280,4 +280,42 @@ router.put('/users/:id/role', verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
+// 6. GET /api/admin/settings - Retrieve tracking settings
+router.get('/settings', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { getSystemSettings } = require('../utils/settings.util');
+    const settings = await getSystemSettings();
+    res.json(settings);
+  } catch (error) {
+    console.error('Fetch system settings error:', error);
+    res.status(500).json({ error: 'Failed to fetch system settings.' });
+  }
+});
+
+// 7. PUT /api/admin/settings - Update tracking settings
+router.put('/settings', verifyToken, verifyAdmin, async (req, res) => {
+  const { trackingMode, trackingSpeed } = req.body;
+
+  if (trackingMode && trackingMode !== 'development' && trackingMode !== 'production') {
+    return res.status(400).json({ error: 'Invalid trackingMode. Must be development or production.' });
+  }
+  if (trackingSpeed && trackingSpeed !== 'demo' && trackingSpeed !== 'normal') {
+    return res.status(400).json({ error: 'Invalid trackingSpeed. Must be demo or normal.' });
+  }
+
+  try {
+    const { updateSystemSetting } = require('../utils/settings.util');
+    if (trackingMode) {
+      await updateSystemSetting('tracking_mode', trackingMode);
+    }
+    if (trackingSpeed) {
+      await updateSystemSetting('tracking_speed', trackingSpeed);
+    }
+    res.json({ message: 'System settings updated successfully.' });
+  } catch (error) {
+    console.error('Update system settings error:', error);
+    res.status(500).json({ error: 'Failed to update system settings.' });
+  }
+});
+
 module.exports = router;

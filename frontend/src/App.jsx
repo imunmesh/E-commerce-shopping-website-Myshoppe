@@ -11,6 +11,7 @@ import { fetchCompare } from './store/compareSlice';
 // Components
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import ChatWidget from './components/Chatbot/ChatWidget';
 
 // Pages
 import Home from './pages/Home';
@@ -135,6 +136,9 @@ function App() {
 
         {/* Global Footer */}
         <Footer />
+
+        {/* Floating Chatbot Assistant Widget */}
+        <ChatWidget />
 
       </div>
     </BrowserRouter>

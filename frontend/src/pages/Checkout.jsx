@@ -122,7 +122,8 @@ const Checkout = () => {
     try {
       const response = await api.post('/payment/create-checkout-session', {
         addressId: selectedAddress.id,
-        couponCode: appliedCoupon ? appliedCoupon.code : null
+        couponCode: appliedCoupon ? appliedCoupon.code : null,
+        clientUrl: window.location.origin
       });
       const { url } = response.data;
       

@@ -127,6 +127,39 @@ router.get('/categories', async (req, res) => {
   }
 });
 
+// 8. GET /api/products/recently-viewed - Retrieve user's recently viewed history (last 20 unique products)
+router.get('/recently-viewed', verifyToken, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const result = await db.query(
+      `SELECT rv.viewed_at, p.*,
+              COALESCE(
+                json_agg(
+                  json_build_object(
+                    'id', pi.id,
+                    'image_url', pi.image_url,
+                    'public_id', pi.public_id,
+                    'is_primary', pi.is_primary
+                  )
+                ) FILTER (WHERE pi.image_url IS NOT NULL),
+                '[]'
+              ) as images
+       FROM recently_viewed rv
+       JOIN products p ON rv.product_id = p.id
+       LEFT JOIN product_images pi ON p.id = pi.product_id
+       WHERE rv.user_id = $1
+       GROUP BY rv.id, p.id
+       ORDER BY rv.viewed_at DESC
+       LIMIT 20`,
+      [userId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Fetch recently viewed error:', error);
+    res.status(500).json({ error: 'Failed to fetch recently viewed products.' });
+  }
+});
+
 // 3. Get single product detail (with image gallery and reviews)
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
@@ -326,37 +359,6 @@ router.post('/:id/view', verifyToken, async (req, res) => {
   }
 });
 
-// 8. GET /api/products/recently-viewed - Retrieve user's recently viewed history (last 20 unique products)
-router.get('/recently-viewed', verifyToken, async (req, res) => {
-  const userId = req.user.id;
-  try {
-    const result = await db.query(
-      `SELECT rv.viewed_at, p.*,
-              COALESCE(
-                json_agg(
-                  json_build_object(
-                    'id', pi.id,
-                    'image_url', pi.image_url,
-                    'public_id', pi.public_id,
-                    'is_primary', pi.is_primary
-                  )
-                ) FILTER (WHERE pi.image_url IS NOT NULL),
-                '[]'
-              ) as images
-       FROM recently_viewed rv
-       JOIN products p ON rv.product_id = p.id
-       LEFT JOIN product_images pi ON p.id = pi.product_id
-       WHERE rv.user_id = $1
-       GROUP BY rv.id, p.id
-       ORDER BY rv.viewed_at DESC
-       LIMIT 20`,
-      [userId]
-    );
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Fetch recently viewed error:', error);
-    res.status(500).json({ error: 'Failed to fetch recently viewed products.' });
-  }
-});
+
 
 module.exports = router;

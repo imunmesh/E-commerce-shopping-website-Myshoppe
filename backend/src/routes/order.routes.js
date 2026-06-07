@@ -237,4 +237,170 @@ router.get('/:id/invoice', verifyToken, async (req, res) => {
   }
 });
 
+// 6. POST /api/orders/:id/tracking - Add custom tracking log (Admin only)
+router.post('/:id/tracking', verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { status, location, message, triggerEmail } = req.body;
+  if (!status || !location || !message) {
+    return res.status(400).json({ error: 'Status, location, and message are required.' });
+  }
+
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Insert order tracking log
+    const result = await client.query(
+      'INSERT INTO order_tracking (order_id, status, location, message) VALUES ($1, $2, $3, $4) RETURNING *',
+      [id, status, location, message]
+    );
+
+    // 2. Update parent order status
+    await client.query(
+      'UPDATE orders SET order_status = $1 WHERE id = $2',
+      [status, id]
+    );
+
+    // 3. Create notification for user
+    const orderRes = await client.query('SELECT user_id, estimated_delivery_date FROM orders WHERE id = $1', [id]);
+    if (orderRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+    const order = orderRes.rows[0];
+    
+    const notifIcons = {
+      'Placed': '🛍️',
+      'Packed': '📦',
+      'Shipped': '🚚',
+      'Out For Delivery': '📍',
+      'Delivered': '✅',
+      'Refunded': '💰'
+    };
+    const title = `${notifIcons[status] || '🚚'} Order ${status}`;
+    await client.query(
+      `INSERT INTO notifications (user_id, title, message, type) VALUES ($1, $2, $3, $4)`,
+      [order.user_id, title, message, status]
+    );
+
+    await client.query('COMMIT');
+
+    // 4. Optionally trigger email
+    if (triggerEmail) {
+      const userRes = await db.query('SELECT id, name, email FROM users WHERE id = $1', [order.user_id]);
+      if (userRes.rows.length > 0) {
+        const user = userRes.rows[0];
+        const emailUtil = require('../utils/email.util');
+        
+        switch (status) {
+          case 'Placed':
+            const itemsRes = await db.query(
+              `SELECT oi.*, p.title, p.thumbnail 
+               FROM order_items oi
+               LEFT JOIN products p ON oi.product_id = p.id
+               WHERE oi.order_id = $1`,
+              [id]
+            );
+            const addressRes = await db.query('SELECT * FROM order_addresses WHERE order_id = $1', [id]);
+            await emailUtil.sendOrderConfirmationEmail(user, order, itemsRes.rows, addressRes.rows[0] || null);
+            break;
+          case 'Packed':
+            await emailUtil.sendPackedEmail(user, order, location);
+            break;
+          case 'Shipped':
+            await emailUtil.sendShippingEmail(user, order, location);
+            break;
+          case 'Out For Delivery':
+            await emailUtil.sendOutForDeliveryEmail(user, order, location, null);
+            break;
+          case 'Delivered':
+            await emailUtil.sendDeliveryEmail(user, order, location, null);
+            break;
+          case 'Refunded':
+            await emailUtil.sendRefundEmail(user, order);
+            break;
+        }
+      }
+    }
+
+    res.status(201).json({ message: 'Tracking log added successfully.', log: result.rows[0] });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Add tracking log error:', error);
+    res.status(500).json({ error: 'Failed to add tracking log.' });
+  } finally {
+    client.release();
+  }
+});
+
+// 7. POST /api/orders/:id/resend-email - Resend tracking email (Admin only)
+router.post('/:id/resend-email', verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  const validStatuses = ['Placed', 'Packed', 'Shipped', 'Out For Delivery', 'Delivered', 'Refunded'];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'Invalid tracking status for email resend.' });
+  }
+  try {
+    // Fetch order and customer details
+    const orderRes = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
+    if (orderRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+    const order = orderRes.rows[0];
+    const userRes = await db.query('SELECT id, name, email FROM users WHERE id = $1', [order.user_id]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    const user = userRes.rows[0];
+    
+    // Fetch latest tracking log for this status to get location info
+    const trackingRes = await db.query(
+      'SELECT location FROM order_tracking WHERE order_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 1',
+      [id, status]
+    );
+    const location = trackingRes.rows[0]?.location || 'Mumbai Warehouse';
+
+    const emailUtil = require('../utils/email.util');
+    
+    switch (status) {
+      case 'Placed':
+        // Fetch order items and address for order confirmation email
+        const itemsRes = await db.query(
+          `SELECT oi.*, p.title, p.thumbnail 
+           FROM order_items oi
+           LEFT JOIN products p ON oi.product_id = p.id
+           WHERE oi.order_id = $1`,
+          [id]
+        );
+        const addressRes = await db.query('SELECT * FROM order_addresses WHERE order_id = $1', [id]);
+        await emailUtil.sendOrderConfirmationEmail(user, order, itemsRes.rows, addressRes.rows[0] || null);
+        break;
+      case 'Packed':
+        await emailUtil.sendPackedEmail(user, order, location);
+        break;
+      case 'Shipped':
+        await emailUtil.sendShippingEmail(user, order, location);
+        break;
+      case 'Out For Delivery':
+        await emailUtil.sendOutForDeliveryEmail(user, order, location, null);
+        break;
+      case 'Delivered':
+        await emailUtil.sendDeliveryEmail(user, order, location, null);
+        break;
+      case 'Refunded':
+        await emailUtil.sendRefundEmail(user, order);
+        break;
+      default:
+        return res.status(400).json({ error: 'No email template mapped for this status.' });
+    }
+    
+    res.json({ message: `Successfully resent ${status} email to ${user.email}.` });
+  } catch (error) {
+    console.error('Resend email error:', error);
+    res.status(500).json({ error: 'Failed to resend tracking email.' });
+  }
+});
+
 module.exports = router;
+

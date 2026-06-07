@@ -64,11 +64,35 @@ const createOrderFromCheckout = async (userId, itemsString, amount, sessionId, p
     }
     const addr = addressRes.rows[0];
 
+    // Calculate estimated delivery date based on tracking settings
+    const { getSystemSettings } = require('../utils/settings.util');
+    const settings = await getSystemSettings();
+    const isFastTracking = settings.isFastTracking;
+    const isProduction = settings.isProduction;
+
+    let estimatedDeliveryDate = new Date();
+    
+    if (isFastTracking) {
+      estimatedDeliveryDate.setSeconds(estimatedDeliveryDate.getSeconds() + 40);
+    } else if (isProduction) {
+      const randomDays = Math.floor(Math.random() * 6) + 2; // 2 to 7 days
+      estimatedDeliveryDate.setDate(estimatedDeliveryDate.getDate() + randomDays);
+    } else {
+      // Normal dev mode: 120 seconds
+      estimatedDeliveryDate.setSeconds(estimatedDeliveryDate.getSeconds() + 120);
+    }
+
+    // Generate random courier and tracking number
+    const couriers = ['Delhivery', 'Blue Dart', 'DTDC', 'Shiprocket', 'Ecom Express', 'Xpressbees'];
+    const courierName = couriers[Math.floor(Math.random() * couriers.length)];
+    const courierCode = courierName.slice(0, 3).toUpperCase();
+    const trackingNumber = `MS-${courierCode}-${Math.floor(100000 + Math.random() * 900000)}`;
+
     // 3. Create the Order
     const orderRes = await client.query(
-      `INSERT INTO orders (user_id, total_amount, payment_status, order_status, coupon_code, discount_amount) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [userId, amount, 'paid', 'Placed', couponCode || null, discountAmount || 0.00]
+      `INSERT INTO orders (user_id, total_amount, payment_status, order_status, coupon_code, discount_amount, estimated_delivery_date, courier_name, tracking_number, stripe_payment_intent_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [userId, amount, 'paid', 'Placed', couponCode || null, discountAmount || 0.00, estimatedDeliveryDate, courierName, trackingNumber, paymentIntentId]
     );
     const newOrder = orderRes.rows[0];
 
@@ -118,10 +142,18 @@ const createOrderFromCheckout = async (userId, itemsString, amount, sessionId, p
 
     // 5. Create Order Tracking entry
     await client.query(
-      `INSERT INTO order_tracking (order_id, status, message) 
-       VALUES ($1, $2, $3)`,
-      [newOrder.id, 'Placed', 'Order has been successfully placed and paid.']
+      `INSERT INTO order_tracking (order_id, status, location, message) 
+       VALUES ($1, $2, $3, $4)`,
+      [newOrder.id, 'Placed', 'Mumbai Warehouse', 'Order has been successfully placed and paid.']
     );
+
+    // Create database notification
+    await client.query(
+      `INSERT INTO notifications (user_id, title, message, type) 
+       VALUES ($1, $2, $3, $4)`,
+      [userId, '🛍️ Order Confirmed', `Thank you! Your order #${newOrder.id} has been placed successfully.`, 'Placed']
+    );
+
 
     // 6. Record Payment
     await client.query(
@@ -158,10 +190,12 @@ const createOrderFromCheckout = async (userId, itemsString, amount, sessionId, p
 // 1. POST /api/payment/create-checkout-session
 router.post('/create-checkout-session', verifyToken, async (req, res) => {
   try {
-    const { addressId, couponCode } = req.body;
+    const { addressId, couponCode, clientUrl: customClientUrl } = req.body;
     if (!addressId) {
       return res.status(400).json({ error: 'A valid delivery address is required to proceed.' });
     }
+
+    const clientUrl = customClientUrl || req.headers.origin || process.env.CLIENT_URL || 'http://localhost:5173';
 
     // Validate that address exists and belongs to user
     const addressRes = await db.query(
@@ -318,7 +352,7 @@ router.post('/create-checkout-session', verifyToken, async (req, res) => {
       
       return res.json({
         id: mockSessionId,
-        url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/checkout/success?session_id=${mockSessionId}&mock=true&items=${encodeURIComponent(itemsMetadataString)}&amount=${totalAmount.toFixed(2)}&address_id=${addressId}&coupon_code=${encodeURIComponent(couponCode || '')}&discount_amount=${appliedDiscount.toFixed(2)}`,
+        url: `${clientUrl}/checkout/success?session_id=${mockSessionId}&mock=true&items=${encodeURIComponent(itemsMetadataString)}&amount=${totalAmount.toFixed(2)}&address_id=${addressId}&coupon_code=${encodeURIComponent(couponCode || '')}&discount_amount=${appliedDiscount.toFixed(2)}`,
         isMock: true
       });
     }
@@ -328,8 +362,8 @@ router.post('/create-checkout-session', verifyToken, async (req, res) => {
       payment_method_types: ['card'],
       line_items: stripeLineItems,
       mode: 'payment',
-      success_url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/checkout/cancel`,
+      success_url: `${clientUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${clientUrl}/checkout/cancel`,
       metadata: {
         userId: req.user.id.toString(),
         items: itemsMetadataString,
