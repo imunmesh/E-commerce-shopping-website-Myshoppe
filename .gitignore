@@ -45,3 +45,6 @@ lerna-debug.log*
 # Firebase keys and caches
 .firebase/
 firebase-debug.log
+
+# Database backups
+backend/scripts/backups/
