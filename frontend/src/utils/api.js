@@ -19,15 +19,53 @@ api.interceptors.request.use(
     const user = auth.currentUser;
     if (user) {
       try {
-        const token = await user.getIdToken();
+        // Force token refresh to avoid expired tokens
+        const token = await user.getIdToken(true);
         config.headers.Authorization = `Bearer ${token}`;
       } catch (err) {
         console.error('Failed to retrieve Firebase ID token:', err);
+        // If token refresh fails, try without force refresh
+        try {
+          const token = await user.getIdToken();
+          config.headers.Authorization = `Bearer ${token}`;
+        } catch (retryErr) {
+          console.error('Failed to retrieve Firebase ID token (retry):', retryErr);
+        }
       }
     }
     return config;
   },
   (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Handle 403 errors and attempt token refresh
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    
+    if (error.response?.status === 403 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      
+      try {
+        const user = auth.currentUser;
+        if (user) {
+          // Force token refresh
+          const token = await user.getIdToken(true);
+          originalRequest.headers.Authorization = `Bearer ${token}`;
+          return api(originalRequest);
+        }
+      } catch (refreshError) {
+        console.error('Token refresh failed:', refreshError);
+        // Redirect to login if refresh fails
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login';
+        }
+      }
+    }
+    
     return Promise.reject(error);
   }
 );
