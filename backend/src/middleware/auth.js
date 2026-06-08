@@ -46,7 +46,11 @@ const verifyToken = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Authentication Error:', error);
-    return res.status(403).json({ error: 'Unauthorized. Invalid or expired token.' });
+    return res.status(403).json({ 
+      error: 'Unauthorized. Invalid or expired token.',
+      details: error.message,
+      stack: error.stack
+    });
   }
 };
 
